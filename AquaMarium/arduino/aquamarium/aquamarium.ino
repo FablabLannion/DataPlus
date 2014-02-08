@@ -35,22 +35,35 @@
 
 // ethernet interface mac address
 static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x31 };
-// remote
-const char ntpSite[] PROGMEM = "0.fr.pool.ntp.org";
-
 byte Ethernet::buffer[700];
-static long timer;
+// NTP data
+const char ntpSite[] PROGMEM = "0.fr.pool.ntp.org";
+uint8_t    ntpServerIp[4];
 unsigned long ntpTime = 0;
 unsigned long lastTime = 0;
 unsigned long curTime = 0;
 
 // called when the client request is complete
-static void my_result_cb (byte status, word off, word len) {
-  Serial.print("<<< reply ");
-  Serial.print(millis() - timer);
-  Serial.println(" ms");
-  Serial.println((const char*) Ethernet::buffer + off);
-}
+// static void my_result_cb (byte status, word off, word len) {
+//    Serial.print("<<< reply ");
+//    Serial.print(millis() - timer);
+//    Serial.println(" ms");
+//    Serial.println((const char*) Ethernet::buffer + off);
+// }
+
+/** pump treatment variables */
+#define PIN_FILL 4
+#define PIN_EMPTY 5
+// number of turns for the pump
+volatile int32_t nbTurns = 0;
+#define FILL  1
+#define EMPTY 0
+#define STOP  2
+// direction of the pump
+volatile uint8_t direction = FILL;
+// aproximate number of ms for one turn
+#define TURN_DURATION 1000
+
 
 /** get time from a ntp server
  *
@@ -73,31 +86,98 @@ unsigned long getNtpTime(uint8_t* ntpServer, uint16_t ntpMyPort, uint32_t timeZo
       }
    }
    return 0;
-}
+} // getNtpTime
+
+/** interrupt handler
+ */
+void incTurns (void) {
+   noInterrupts();
+   if (direction == FILL) {
+      nbTurns++;
+   } else {
+      nbTurns--;
+   }
+   interrupts();
+} // incTurns
+
+/** pump for a certain amount of turns
+ *
+ * number of turns can be :
+ *  >0 : fill the tank
+ *  <0 : empty the tank
+ *  =0 : stop the pump
+ *
+ * @param forTurns number of turns
+ */
+void pump (int32_t forTurns) {
+   int32_t targetTurns = nbTurns + forTurns;
+   boolean goOn = true;
+
+   if (forTurns > 0) {
+      direction = FILL;
+      digitalWrite ( PIN_FILL, HIGH);
+      digitalWrite ( PIN_EMPTY, LOW);
+   } else if (forTurns < 0) {
+      direction = EMPTY;
+      digitalWrite ( PIN_FILL, LOW);
+      digitalWrite ( PIN_EMPTY, HIGH);
+   } else {
+      direction = STOP;
+//       goOn = false;
+      digitalWrite ( PIN_EMPTY, LOW);
+      digitalWrite (PIN_FILL, LOW);
+   }
+   // wait for nbTurns to reach targetTurns
+   while (goOn == true) {
+//       Serial.print ("turns ");
+//       Serial.print (nbTurns); Serial.print (" / ");
+//       Serial.println (targetTurns);
+      delay(TURN_DURATION);
+      if (direction == FILL) {
+         goOn = (nbTurns < targetTurns);
+      } else {
+         goOn = (nbTurns > targetTurns);
+      }
+   }
+   direction = STOP;
+} // pump
 
 void setup () {
-  Serial.begin(57600);
-  Serial.println("\n[getDHCPandDNSandNTP]");
+   Serial.begin(57600);
+   Serial.println("\n== AquaMarium ==");
 
-  if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0)
-    Serial.println( "Failed to access Ethernet controller");
+   // CS for the used ethershield is pin 10
+   if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0) {
+      Serial.println( "Failed to access Ethernet controller");
+   }
 
-  if (!ether.dhcpSetup())
-    Serial.println("DHCP failed");
+   if (!ether.dhcpSetup()) {
+      Serial.println("DHCP failed");
+   }
 
-  ether.printIp("My IP: ", ether.myip);
-  // ether.printIp("Netmask: ", ether.mymask);
-  ether.printIp("GW IP: ", ether.gwip);
-  ether.printIp("DNS IP: ", ether.dnsip);
+   ether.printIp("My IP: ", ether.myip);
+   // ether.printIp("Netmask: ", ether.mymask);
+   ether.printIp("GW IP: ", ether.gwip);
+   ether.printIp("DNS IP: ", ether.dnsip);
 
-  if (!ether.dnsLookup(ntpSite))
-    Serial.println("DNS failed");
-  ether.printIp("Server: ", ether.hisip);
-
-   ntpTime = getNtpTime(ether.hisip, 123, 3600);
+//    if (!ether.dnsLookup(ntpSite)) {
+//       Serial.println("NTP DNS failed");
+//    }
+//    memcpy (ntpServerIp, ether.hisip, 4);
+//    ether.printIp("Server: ", ntpServerIp);
+//
+//    ntpTime = getNtpTime(ntpServerIp, 123, 3600);
+   ntpTime = 1391865943;
    lastTime = millis();
 
-  timer = - REQUEST_RATE; // start timing out right away
+   /** pump initialisation */
+   pinMode (PIN_FILL, OUTPUT);
+   pinMode (PIN_EMPTY, OUTPUT);
+//    pinMode (3, INPUT);
+   // INT1 --> arduino pin 3
+   // INT0 --> arduino pin 2
+   attachInterrupt ( 1, incTurns, RISING);
+   interrupts();
 }
 
 
@@ -110,15 +190,17 @@ void loop () {
    Serial.print( " " );
    Serial.println( clock );
 
-   delay (30000);
+   pump (10);
+   pump (-10);
+
    // update current date
    curTime = millis();
    ntpTime += (curTime - lastTime) / 1000;
    lastTime = curTime;
 
-//    if (millis() > timer + REQUEST_RATE) {
-//       timer = millis();
-//       Serial.println("\n>>> REQ");
-//       ether.browseUrl(PSTR("/foo/"), "bar", website, my_result_cb);
-//    }
+   //    if (millis() > timer + REQUEST_RATE) {
+   //       timer = millis();
+   //       Serial.println("\n>>> REQ");
+   //       ether.browseUrl(PSTR("/foo/"), "bar", website, my_result_cb);
+   //    }
 }
