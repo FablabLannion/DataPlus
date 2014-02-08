@@ -1,30 +1,29 @@
 <?php
-// Q&D parser for maree.info
+date_default_timezone_set ('Europe/Paris');
 
-$port = 68;
+require_once "simple_html_dom.php";
 
-function err($str = "") {
-   print ("err: $str\n");
-   exit();
-} // err
-
-$fp = fopen ("http://horloge.maree.frbateaux.net/wd$port.js",'r');
-// $fp = fopen ("/tmp/wd$port.js",'r');
-if ($fp == FALSE) {
-   err('fopen');
+$html = new simple_html_dom();
+$html->load_file("http://mer.meteoconsult.fr/meteo-marine/fr/high/C%F4tes-d%27Armor/bulletin-meteo-port-Perros-Guirec+%2822700%29-234-23-0.php");
+// $html->load_file("test.html");
+$a=$html->find('table',8);
+// get coeficient
+$a = preg_split("/[\s,]+/", $html->find('table',8)->last_child()->last_child()->children(0)->children(0)->children(3)->plaintext );
+// init output with coeficient
+$tide = $a[2];
+// get tide hours, high split into an array
+$a = preg_split("/[\s,]+/", str_replace('&nbsp;',' ',trim ($html->find('table',9)->plaintext) ) ) ;
+foreach ($a as $e) {
+   if (preg_match ('/\d{2}h\d{2}/', $e)) {
+//       echo "heure $e\n";
+      $ts = mktime ((int)substr($e,0,2), (int)substr($e,-2) );
+      $tide .= ";$ts";
+   } elseif (preg_match ('/(\d+\.\d+)m/', $e, $matches)) {
+//       echo "hauteur $e\n";
+//       print_r($matches);
+      $tide .= ";$matches[1]";
+   }
 }
-$page = fread ($fp, 4096);
-if ($page == FALSE) {
-   err('fread');
-}
-fclose($fp);
-
-$ret = preg_match ( '/PostIt.*innerHTML="(.*)";/' , strip_tags($page), $arr);
-if ($ret != 1) {
-   err('no match');
-}
-// print_r ($arr);
-print (substr ($arr[1], 0, 8) . "\n");
-print (substr ($arr[1], -8)   . "\n");
-
+echo "$tide\n";
+// print_r($a);
 ?>
