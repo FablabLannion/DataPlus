@@ -23,108 +23,102 @@
  * along with AquaMarium.  If not, see <http://www.gnu.org/licenses/>.
  *********************************************************************
  * Needed Librairies :
+ *   - https://github.com/Pioneer-Valley-Open-Science/ethercard
+ *     this one is updated for recent versions of avr-gcc
  *********************************************************************
  */
-#include <EtherShield.h>
+
+#include <EtherCard.h>
 #include "time.h"
-#include "network.h"
 
-// Please modify the following lines. mac and ip have to be unique
-// in your local area network. You can not have the same numbers in
-// two devices:
-// how did I get the mac addr? Translate the first 3 numbers into ascii is: TUX
+#define REQUEST_RATE 5000 // milliseconds
 
-static uint8_t mymac[6] = { 0x54,0x55,0x58,0x12,0x34,0x57 };
+// ethernet interface mac address
+static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x31 };
+// remote
+const char ntpSite[] PROGMEM = "0.fr.pool.ntp.org";
 
-
-static uint8_t myip[4] = { 0,0,0,0 };
-static uint8_t mynetmask[4] = { 0,0,0,0 };
-
-// IP address of the host being queried to contact (IP of the first portion of the URL):
-static uint8_t ntpsrvip[4] = { 192, 168, 1, 20 };
-uint8_t clientPort = 123;
-uint32_t timeLong = 0;
+byte Ethernet::buffer[700];
+static long timer;
+unsigned long ntpTime = 0;
 unsigned long lastTime = 0;
 unsigned long curTime = 0;
 
-// Default gateway. The ip address of your DSL router. It can be set to the same as
-// websrvip the case where there is no default GW to access the
-// web server (=web server is on the same lan as this host)
-static uint8_t gwip[4] = { 0,0,0,0};
+// called when the client request is complete
+static void my_result_cb (byte status, word off, word len) {
+  Serial.print("<<< reply ");
+  Serial.print(millis() - timer);
+  Serial.println(" ms");
+  Serial.println((const char*) Ethernet::buffer + off);
+}
 
-static uint8_t dnsip[4] = { 0,0,0,0 };
-static uint8_t dhcpsvrip[4] = { 0,0,0,0 };
+/** get time from a ntp server
+ *
+ * original source: https://gist.github.com/futureshape/1328159
+ *
+ * @param ntpServer the ip of the server
+ * @param ntpMyPort IP source port
+ * @param timeZoneOffset offset to add to received time in sec
+ */
+unsigned long getNtpTime(uint8_t* ntpServer, uint16_t ntpMyPort, uint32_t timeZoneOffset) {
+   unsigned long timeFromNTP;
+   ether.ntpRequest(ntpServer, ntpMyPort);
+   Serial.println("NTP request sent");
+   while(true) {
+      word length = ether.packetReceive();
+      ether.packetLoop(length);
+      if(length > 0 && ether.ntpProcessAnswer(&timeFromNTP,ntpMyPort)) {
+         Serial.println("NTP reply received");
+         return timeFromNTP - GETTIMEOFDAY_TO_NTP_OFFSET + timeZoneOffset;
+      }
+   }
+   return 0;
+}
 
-#define DHCPLED 13
+void setup () {
+  Serial.begin(57600);
+  Serial.println("\n[getDHCPandDNSandNTP]");
 
+  if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0)
+    Serial.println( "Failed to access Ethernet controller");
 
-#define BUFFER_SIZE 500
-static uint8_t buf[BUFFER_SIZE+1];
+  if (!ether.dhcpSetup())
+    Serial.println("DHCP failed");
 
-EtherShield es=EtherShield();
+  ether.printIp("My IP: ", ether.myip);
+  // ether.printIp("Netmask: ", ether.mymask);
+  ether.printIp("GW IP: ", ether.gwip);
+  ether.printIp("DNS IP: ", ether.dnsip);
 
-// Programmable delay for flashing LED
-uint16_t delayRate = 1000;
+  if (!ether.dnsLookup(ntpSite))
+    Serial.println("DNS failed");
+  ether.printIp("Server: ", ether.hisip);
 
-void setup() {
+   ntpTime = getNtpTime(ether.hisip, 123, 3600);
+   lastTime = millis();
 
-  Serial.begin(19200);
-  Serial.println("DHCP Client test");
-  pinMode( DHCPLED, OUTPUT);
-  digitalWrite( DHCPLED, HIGH);    // Turn it off
-
-  for( int i=0; i<6; i++ ) {
-    Serial.print( mymac[i], HEX );
-    Serial.print( i < 5 ? ":" : "" );
-  }
-  Serial.println();
-
-  // Initialise SPI interface
-  es.ES_enc28j60SpiInit();
-
-  // initialize enc28j60
-  Serial.println("Init ENC28J60");
-
-  es.ES_enc28j60Init(mymac);
-
-
-  Serial.println("Init done");
-
-  Serial.print( "ENC28J60 version " );
-  Serial.println( es.ES_enc28j60Revision(), HEX);
-  if( es.ES_enc28j60Revision() <= 0 ) {
-    Serial.println( "Failed to access ENC28J60");
-
-    while(1);    // Just loop here
-  }
-
-   dhcpGet();
-  ntpDate(ntpsrvip);
-  lastTime = millis();
-
+  timer = - REQUEST_RATE; // start timing out right away
 }
 
 
-void loop(){
+void loop () {
    char day[22];
    char clock[22];
 
-   gmtime(timeLong - GETTIMEOFDAY_TO_NTP_OFFSET,day,clock);
+   gmtime(ntpTime, day, clock);
    Serial.print( day );
    Serial.print( " " );
    Serial.println( clock );
 
-  digitalWrite( DHCPLED, HIGH);
-  delay(delayRate);
-  digitalWrite(DHCPLED, LOW);
-  delay(delayRate);
+   delay (30000);
+   // update current date
+   curTime = millis();
+   ntpTime += (curTime - lastTime) / 1000;
+   lastTime = curTime;
 
-  // update current date
-  curTime = millis();
-  timeLong += (curTime - lastTime) / 1000;
-  lastTime = curTime;
-
+//    if (millis() > timer + REQUEST_RATE) {
+//       timer = millis();
+//       Serial.println("\n>>> REQ");
+//       ether.browseUrl(PSTR("/foo/"), "bar", website, my_result_cb);
+//    }
 }
-
-
-
