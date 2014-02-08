@@ -23,12 +23,19 @@
  * along with AquaMarium.  If not, see <http://www.gnu.org/licenses/>.
  *********************************************************************
  * Needed Librairies :
- *   - https://github.com/Pioneer-Valley-Open-Science/ethercard
+ *   - EtherCad https://github.com/Pioneer-Valley-Open-Science/ethercard
  *     this one is updated for recent versions of avr-gcc
+ *   - PinChangeInt http://code.google.com/p/arduino-pinchangeint/
  *********************************************************************
  */
 
+// to indicate that port b will not be used for pin change interrupts
+#define NO_PORTB_PINCHANGES
+// to indicate that port d will not be used for pin change interrupts
+#define NO_PORTD_PINCHANGES
+
 #include <EtherCard.h>
+#include <PinChangeInt.h>
 #include "time.h"
 
 #define REQUEST_RATE 5000 // milliseconds
@@ -54,6 +61,7 @@ unsigned long curTime = 0;
 /** pump treatment variables */
 #define PIN_FILL 4
 #define PIN_EMPTY 5
+#define PIN_WATER A0
 // number of turns for the pump
 volatile int32_t nbTurns = 0;
 #define FILL  1
@@ -88,7 +96,7 @@ unsigned long getNtpTime(uint8_t* ntpServer, uint16_t ntpMyPort, uint32_t timeZo
    return 0;
 } // getNtpTime
 
-/** interrupt handler
+/** interrupt handler for reed sensor
  */
 void incTurns (void) {
    noInterrupts();
@@ -99,6 +107,14 @@ void incTurns (void) {
    }
    interrupts();
 } // incTurns
+
+/** interrupt handler for water sensor
+ */
+void midTide (void) {
+   Serial.print ("mi-maree: ");
+   Serial.println (nbTurns);
+   nbTurns = 0;
+} // midTide
 
 /** pump for a certain amount of turns
  *
@@ -112,6 +128,7 @@ void incTurns (void) {
 void pump (int32_t forTurns) {
    int32_t targetTurns = nbTurns + forTurns;
    boolean goOn = true;
+   uint16_t val = 0;
 
    if (forTurns > 0) {
       direction = FILL;
@@ -123,7 +140,7 @@ void pump (int32_t forTurns) {
       digitalWrite ( PIN_EMPTY, HIGH);
    } else {
       direction = STOP;
-//       goOn = false;
+      goOn = false;
       digitalWrite ( PIN_EMPTY, LOW);
       digitalWrite (PIN_FILL, LOW);
    }
@@ -167,16 +184,17 @@ void setup () {
 //    ether.printIp("Server: ", ntpServerIp);
 //
 //    ntpTime = getNtpTime(ntpServerIp, 123, 3600);
-   ntpTime = 1391865943;
+   ntpTime = 1391865943; // DEBUG
    lastTime = millis();
 
    /** pump initialisation */
-   pinMode (PIN_FILL, OUTPUT);
+   pinMode (PIN_FILL,  OUTPUT);
    pinMode (PIN_EMPTY, OUTPUT);
-//    pinMode (3, INPUT);
+   pinMode (PIN_WATER, INPUT);
    // INT1 --> arduino pin 3
    // INT0 --> arduino pin 2
    attachInterrupt ( 1, incTurns, RISING);
+   PCintPort::attachInterrupt(PIN_WATER, &midTide, CHANGE);
    interrupts();
 }
 
