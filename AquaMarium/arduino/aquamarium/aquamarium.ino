@@ -27,15 +27,20 @@
  *     this one is updated for recent versions of avr-gcc
  *   - PinChangeInt http://code.google.com/p/arduino-pinchangeint/
  *********************************************************************
+ * Pinout :
+ * 2: ILS, 3: opto, 6: mid-tide
+ * 4: motor fill, 5: motor empty
+ *********************************************************************
  */
 
-// to indicate that port b will not be used for pin change interrupts
-#define NO_PORTB_PINCHANGES
-// to indicate that port d will not be used for pin change interrupts
-#define NO_PORTD_PINCHANGES
+// // to indicate that port b will not be used for pin change interrupts
+// #define NO_PORTB_PINCHANGES
+// // to indicate that port d will not be used for pin change interrupts
+// #define NO_PORTC_PINCHANGES
+// #define       DISABLE_PCINT_MULTI_SERVICE
 
 #include <EtherCard.h>
-#include <PinChangeInt.h>
+// #include <PinChangeInt.h>
 #include "time.h"
 
 #define REQUEST_RATE 5000 // milliseconds
@@ -59,9 +64,11 @@ unsigned long curTime = 0;
 // }
 
 /** pump treatment variables */
+#define PIN_ILS 2
+#define PIN_OPTO 3
 #define PIN_FILL 4
 #define PIN_EMPTY 5
-#define PIN_WATER A0
+#define PIN_WATER 6
 // number of turns for the pump
 volatile int32_t nbTurns = 0;
 #define FILL  1
@@ -99,18 +106,21 @@ unsigned long getNtpTime(uint8_t* ntpServer, uint16_t ntpMyPort, uint32_t timeZo
 /** interrupt handler for reed sensor
  */
 void incTurns (void) {
+//    Serial.print("pin:"); Serial.println(PCintPort::arduinoPin);
    noInterrupts();
    if (direction == FILL) {
       nbTurns++;
    } else {
       nbTurns--;
    }
+   Serial.println(nbTurns);
    interrupts();
 } // incTurns
 
 /** interrupt handler for water sensor
  */
 void midTide (void) {
+//    Serial.print("pin:"); Serial.println(PCintPort::arduinoPin);
    Serial.print ("mi-maree: ");
    Serial.println (nbTurns);
    nbTurns = 0;
@@ -190,11 +200,13 @@ void setup () {
    /** pump initialisation */
    pinMode (PIN_FILL,  OUTPUT);
    pinMode (PIN_EMPTY, OUTPUT);
-   pinMode (PIN_WATER, INPUT);
+//    pinMode (PIN_ILS, INPUT);
+//    pinMode (PIN_WATER, INPUT);
    // INT1 --> arduino pin 3
    // INT0 --> arduino pin 2
-   attachInterrupt ( 1, incTurns, RISING);
-   PCintPort::attachInterrupt(PIN_WATER, &midTide, CHANGE);
+   attachInterrupt ( 0, incTurns, RISING);
+//    PCintPort::attachInterrupt(PIN_WATER, &midTide, CHANGE);
+//    PCintPort::attachInterrupt(PIN_ILS, &incTurns, RISING);
    interrupts();
 }
 
