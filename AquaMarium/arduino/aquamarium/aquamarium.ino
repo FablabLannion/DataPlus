@@ -58,7 +58,19 @@ const char webSite[] PROGMEM = "diskstation";
 boolean webOk = false;
 unsigned long h1,h2;
 float m1, m2;
+// number of turns for mid-tide to high|low tide
 #define MAX_TURN 100
+// speed factor at which tide is going
+#define SPEED_FACTOR 100
+// numbers of rotations per 10 minutes for each tide hour
+uint16_t rpm[] = {
+   (1*(2*MAX_TURN/12))/6,
+   (2*(2*MAX_TURN/12))/6,
+   (3*(2*MAX_TURN/12))/6,
+   (3*(2*MAX_TURN/12))/6,
+   (2*(2*MAX_TURN/12))/6,
+   (1*(2*MAX_TURN/12))/6
+};
 
 /** pump treatment variables */
 #define PIN_ILS 2
@@ -74,7 +86,7 @@ volatile int32_t nbTurns = 0;
 // direction of the pump
 volatile uint8_t direction = FILL;
 // aproximate number of ms for one turn
-#define TURN_DURATION 1000
+#define TURN_DURATION 500
 uint8_t previousWater;
 
 
@@ -141,6 +153,8 @@ void midTide (void) {
  *  <0 : empty the tank
  *  =0 : stop the pump
  *
+ * Warning: might be a bug when close to mid-tide
+ *
  * @param forTurns number of turns
  */
 void pump (int32_t forTurns) {
@@ -148,6 +162,9 @@ void pump (int32_t forTurns) {
    boolean goOn = true;
    uint16_t val = 0;
    uint8_t curWater = previousWater;
+
+   Serial.print("pump:");
+   Serial.println (forTurns);
 
    if (forTurns > 0) {
       direction = FILL;
@@ -179,6 +196,59 @@ void pump (int32_t forTurns) {
    direction = STOP;
 } // pump
 
+/** goes to mid tide by pumping water in or out
+ */
+void gotoMidTide (void) {
+   uint8_t cW = digitalRead (PIN_WATER);
+   uint8_t nT = (cW > 0)? -1 : 1;
+   Serial.println("gotomid");
+
+   while (cW == digitalRead(PIN_WATER)) {
+      pump(nT);
+   }
+} // gotoMidTide
+
+// called when the web client request is complete
+static void web_cb (byte status, word off, word len) {
+   char *p,*i;
+
+//    Serial.println((const char*) Ethernet::buffer + off);
+   // 1391952287;6.70;1391974907;3.85
+   p = strtok_r ((char*)Ethernet::buffer + off, ";", &i); // header
+   p = strtok_r (NULL, ";", &i); // h1
+//    Serial.print("h1 "); Serial.println(p);
+   h1 = atol(p);
+   Serial.print (h1);
+   p = strtok_r (NULL, ";", &i); // m1
+   m1 = atof(p);
+   Serial.print(":"); Serial.println(m1);
+   p = strtok_r (NULL, ";", &i); // h2
+   h2 = atol(p);
+//    Serial.print("h2 "); Serial.println(p);
+   Serial.print (h2);
+   p = strtok_r (NULL, ";", &i); // m2
+   m2 = atof(p);
+   Serial.print(":"); Serial.println(m2);
+
+   webOk = true;
+}
+
+/** get the current tide from webserver
+ */
+void getTide (void) {
+   Serial.println("Web DNS");
+   if (!ether.dnsLookup(webSite)) {
+      Serial.println("WEB DNS failed");
+   }
+   ether.printIp("SRV: ", ether.hisip);
+   Serial.println("web GET");
+   ether.browseUrl(PSTR("/tide/"), "geth.php", webSite, web_cb);
+   while (webOk == false) {
+      ether.packetLoop(ether.packetReceive());
+   }
+} // getTide
+
+/************************ main setup *********************************/
 void setup () {
    Serial.begin(57600);
    Serial.println("\n== AquaMarium ==");
@@ -210,73 +280,56 @@ void setup () {
    PCintPort::attachInterrupt(PIN_ILS, &incTurns, RISING);
    interrupts();
 //    previousWater = digitalRead (PIN_WATER);
-}
+} // setup()
 
-// called when the web client request is complete
-static void web_cb (byte status, word off, word len) {
-   char *p,*i;
-
-//    Serial.println((const char*) Ethernet::buffer + off);
-   // 1391952287;6.70;1391974907;3.85
-   p = strtok_r ((char*)Ethernet::buffer + off, ";", &i); // header
-   p = strtok_r (NULL, ";", &i); // h1
-//    Serial.print("h1 "); Serial.println(p);
-   h1 = atol(p);
-   Serial.print (h1);
-   p = strtok_r (NULL, ";", &i); // m1
-   m1 = atof(p);
-   Serial.print(":"); Serial.println(m1);
-   p = strtok_r (NULL, ";", &i); // h2
-   h2 = atol(p);
-//    Serial.print("h2 "); Serial.println(p);
-   Serial.print (h2);
-   p = strtok_r (NULL, ";", &i); // m2
-   m2 = atof(p);
-   Serial.print(":"); Serial.println(m2);
-
-   webOk = true;
-}
-
-void getTide (void) {
-   Serial.println("Web DNS");
-   if (!ether.dnsLookup(webSite)) {
-      Serial.println("WEB DNS failed");
-   }
-   ether.printIp("SRV: ", ether.hisip);
-   Serial.println("web GET");
-   ether.browseUrl(PSTR("/tide/"), "geth.php", webSite, web_cb);
-   while (webOk == false) {
-      ether.packetLoop(ether.packetReceive());
-   }
-} // getTide
-
+/************************ main loop *********************************/
 void loop () {
    char day[22];
    char clock[22];
+   int32_t n;
+   int8_t  sens = 1, i=0, init=1;
 
+   while (1) {
+   //    ntpTime = getNtpTime(ntpSite, 123, 3600);
+      ntpTime = getNtpTime(ntpSite, 123, 0);
+   //    ntpTime = 1391961398; // DEBUG
+      lastTime = millis();
 
-   ntpTime = getNtpTime(ntpSite, 123, 3600);
-//    ntpTime = 1391961398; // DEBUG
-   lastTime = millis();
+      getTide();
 
-   getTide();
+      // display current date
+      gmtime(ntpTime, day, clock);
+      Serial.print( day );
+      Serial.print( " " );
+      Serial.println( clock );
 
-   gmtime(ntpTime, day, clock);
-   Serial.print( day );
-   Serial.print( " " );
-   Serial.println( clock );
+      if (init == 1) {
+         // calibration
+         gotoMidTide();
+         // goto current tide
+         Serial.println("gotocurr");
+         if (m1 > m2) {
+            // jusant
+            n = map (ntpTime, h1, h2, MAX_TURN, -MAX_TURN);
+            sens = -1;
+         } else {
+            // flot
+            n = map (ntpTime, h1, h2, -MAX_TURN, MAX_TURN);
+            sens = 1;
+         }
+         pump (n);
+         init = 0;
+      }
 
-   pump (10);
-   pump (-10);
-
-   // update current date
-   curTime = millis();
-   ntpTime += (curTime - lastTime) / 1000;
-   lastTime = curTime;
-
-   //    if (millis() > timer + REQUEST_RATE) {
-   //       timer = millis();
-   //       Serial.println("\n>>> REQ");
-   //       ether.browseUrl(PSTR("/foo/"), "bar", website, my_result_cb);
-   //    }
-}
+      // do the tide
+      while (ntpTime <= h2) {
+         i = map (ntpTime, h1, h2, 0, 6); // get the current rpm index
+         pump( sens * rpm[i] );
+         delay(600000/SPEED_FACTOR); // sleep 10 min
+         // update current date
+         curTime = millis();
+         ntpTime += ((curTime - lastTime) / 1000) * SPEED_FACTOR;
+         lastTime = curTime;
+      }
+   } // while 1
+} // loop()
