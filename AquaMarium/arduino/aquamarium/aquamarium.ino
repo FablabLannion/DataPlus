@@ -47,21 +47,18 @@
 
 // ethernet interface mac address
 static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x31 };
-byte Ethernet::buffer[700];
+byte Ethernet::buffer[600];
 // NTP data
 const char ntpSite[] PROGMEM = "0.fr.pool.ntp.org";
-uint8_t    ntpServerIp[4];
 unsigned long ntpTime = 0;
 unsigned long lastTime = 0;
 unsigned long curTime = 0;
-
-// called when the client request is complete
-// static void my_result_cb (byte status, word off, word len) {
-//    Serial.print("<<< reply ");
-//    Serial.print(millis() - timer);
-//    Serial.println(" ms");
-//    Serial.println((const char*) Ethernet::buffer + off);
-// }
+// tide data
+const char webSite[] PROGMEM = "diskstation";
+boolean webOk = false;
+unsigned long h1,h2;
+float m1, m2;
+#define MAX_TURN 100
 
 /** pump treatment variables */
 #define PIN_ILS 2
@@ -85,23 +82,32 @@ uint8_t previousWater;
  *
  * original source: https://gist.github.com/futureshape/1328159
  *
- * @param ntpServer the ip of the server
+ * @param ntpServer the name of the server
  * @param ntpMyPort IP source port
  * @param timeZoneOffset offset to add to received time in sec
  */
-unsigned long getNtpTime(uint8_t* ntpServer, uint16_t ntpMyPort, uint32_t timeZoneOffset) {
+unsigned long getNtpTime(const char* ntpServer, uint16_t ntpMyPort, uint32_t timeZoneOffset) {
    unsigned long timeFromNTP;
-   ether.ntpRequest(ntpServer, ntpMyPort);
-   Serial.println("NTP request sent");
+   uint8_t ntpServerIp[4];
+
+   Serial.println("ntp dns");
+   if (!ether.dnsLookup(ntpServer)) {
+      Serial.println("NTP DNS failed");
+   }
+   memcpy (ntpServerIp, ether.hisip, 4);
+   ether.printIp("Server: ", ntpServerIp);
+
+   ether.ntpRequest(ntpServerIp, ntpMyPort);
+   Serial.println("NTP req");
    while(true) {
       word length = ether.packetReceive();
       ether.packetLoop(length);
       if(length > 0 && ether.ntpProcessAnswer(&timeFromNTP,ntpMyPort)) {
-         Serial.println("NTP reply received");
+         Serial.println("NTP reply");
          return timeFromNTP - GETTIMEOFDAY_TO_NTP_OFFSET + timeZoneOffset;
       }
    }
-   return 0;
+   return ntpTime;
 } // getNtpTime
 
 /** interrupt handler for reed sensor
@@ -114,6 +120,7 @@ void incTurns (void) {
    } else {
       nbTurns--;
    }
+   Serial.print("incT:");
    Serial.println(nbTurns);
    interrupts();
 } // incTurns
@@ -161,13 +168,6 @@ void pump (int32_t forTurns) {
 //       Serial.print ("turns ");
 //       Serial.print (nbTurns); Serial.print (" / ");
 //       Serial.println (targetTurns);
-      // read Waer level
-//       curWater = digitalRead(PIN_WATER);
-//       Serial.println (curWater);
-//       if (previousWater != curWater) {
-//          previousWater = curWater;
-//          midTide();
-//       }
 
       delay(TURN_DURATION);
       if (direction == FILL) {
@@ -185,9 +185,10 @@ void setup () {
 
    // CS for the used ethershield is pin 10
    if (ether.begin(sizeof Ethernet::buffer, mymac, 10) == 0) {
-      Serial.println( "Failed to access Ethernet controller");
+      Serial.println( "Failed Ethernet");
    }
 
+   Serial.println("dhcp req");
    if (!ether.dhcpSetup()) {
       Serial.println("DHCP failed");
    }
@@ -197,16 +198,6 @@ void setup () {
    ether.printIp("GW IP: ", ether.gwip);
    ether.printIp("DNS IP: ", ether.dnsip);
 
-//    if (!ether.dnsLookup(ntpSite)) {
-//       Serial.println("NTP DNS failed");
-//    }
-//    memcpy (ntpServerIp, ether.hisip, 4);
-//    ether.printIp("Server: ", ntpServerIp);
-//
-//    ntpTime = getNtpTime(ntpServerIp, 123, 3600);
-   ntpTime = 1391865943; // DEBUG
-   lastTime = millis();
-
    /** pump initialisation */
    pinMode (PIN_FILL,  OUTPUT);
    pinMode (PIN_EMPTY, OUTPUT);
@@ -214,17 +205,61 @@ void setup () {
    pinMode (PIN_WATER, INPUT);
    // INT1 --> arduino pin 3
    // INT0 --> arduino pin 2
-   attachInterrupt ( 0, incTurns, RISING);
+//    attachInterrupt ( 0, incTurns, RISING);
    PCintPort::attachInterrupt(PIN_WATER, &midTide, CHANGE);
-//    PCintPort::attachInterrupt(PIN_ILS, &incTurns, RISING);
+   PCintPort::attachInterrupt(PIN_ILS, &incTurns, RISING);
    interrupts();
-   previousWater = digitalRead (PIN_WATER);
+//    previousWater = digitalRead (PIN_WATER);
 }
 
+// called when the web client request is complete
+static void web_cb (byte status, word off, word len) {
+   char *p,*i;
+
+//    Serial.println((const char*) Ethernet::buffer + off);
+   // 1391952287;6.70;1391974907;3.85
+   p = strtok_r ((char*)Ethernet::buffer + off, ";", &i); // header
+   p = strtok_r (NULL, ";", &i); // h1
+//    Serial.print("h1 "); Serial.println(p);
+   h1 = atol(p);
+   Serial.print (h1);
+   p = strtok_r (NULL, ";", &i); // m1
+   m1 = atof(p);
+   Serial.print(":"); Serial.println(m1);
+   p = strtok_r (NULL, ";", &i); // h2
+   h2 = atol(p);
+//    Serial.print("h2 "); Serial.println(p);
+   Serial.print (h2);
+   p = strtok_r (NULL, ";", &i); // m2
+   m2 = atof(p);
+   Serial.print(":"); Serial.println(m2);
+
+   webOk = true;
+}
+
+void getTide (void) {
+   Serial.println("Web DNS");
+   if (!ether.dnsLookup(webSite)) {
+      Serial.println("WEB DNS failed");
+   }
+   ether.printIp("SRV: ", ether.hisip);
+   Serial.println("web GET");
+   ether.browseUrl(PSTR("/tide/"), "geth.php", webSite, web_cb);
+   while (webOk == false) {
+      ether.packetLoop(ether.packetReceive());
+   }
+} // getTide
 
 void loop () {
    char day[22];
    char clock[22];
+
+
+   ntpTime = getNtpTime(ntpSite, 123, 3600);
+//    ntpTime = 1391961398; // DEBUG
+   lastTime = millis();
+
+   getTide();
 
    gmtime(ntpTime, day, clock);
    Serial.print( day );
