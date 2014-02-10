@@ -28,7 +28,7 @@
  *   - PinChangeInt http://code.google.com/p/arduino-pinchangeint/
  *********************************************************************
  * Pinout :
- * 2: ILS, 3: opto, 6: mid-tide
+ * 2: ILS, 3: opto, 7: mid-tide
  * 4: motor fill, 5: motor empty
  *********************************************************************
  */
